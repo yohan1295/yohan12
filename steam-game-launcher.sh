@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# stream-game-launcher.sh
+# steam-game-launcher.sh
 #
 # Boots into Windows via systemd-boot and auto-launches a game on Windows startup.
 #
@@ -16,7 +16,7 @@
 #   - sudo / root
 #
 # Usage:
-#   sudo ./stream-game-launcher.sh [--dry-run]
+#   sudo ./steam-game-launcher.sh [--dry-run]
 
 set -euo pipefail
 
@@ -48,20 +48,20 @@ WINDOWS_PARTITION=""
 WINDOWS_BOOT_ENTRY=""
 
 # Mount point used temporarily during this script.
-WINDOWS_MOUNT="/mnt/windows_stream_launch"
+WINDOWS_MOUNT="/mnt/windows_steam_launch"
 
 # ============================================================
 # END CONFIG
 # ============================================================
 
 STARTUP_RELPATH="Users/$WINDOWS_USER/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup"
-LAUNCHER_BAT="stream_game_launch.bat"
+LAUNCHER_BAT="steam_game_launch.bat"
 DRY_RUN=0
 
 # ---- helpers -----------------------------------------------
 
 die()  { echo "ERROR: $*" >&2; exit 1; }
-info() { echo "[stream-launch] $*"; }
+info() { echo "[steam-launch] $*"; }
 warn() { echo "WARNING: $*" >&2; }
 
 # ---- dependency checks -------------------------------------
@@ -202,8 +202,8 @@ write_startup_bat() {
         win_path=$(echo "$GAME_EXE_WINDOWS_PATH" | tr '/' '\\')
         cat > "$bat_path" << BATEOF
 @echo off
-REM stream-game-launcher: one-shot game launcher (direct exe)
-REM This file was created by stream-game-launcher.sh on Linux.
+REM steam-game-launcher: one-shot game launcher (direct exe)
+REM This file was created by steam-game-launcher.sh on Linux.
 REM It will delete itself after launching the game.
 
 start "" "C:\\${win_path}"
@@ -213,8 +213,8 @@ BATEOF
         # Steam URI launch
         cat > "$bat_path" << BATEOF
 @echo off
-REM stream-game-launcher: one-shot Steam game launcher
-REM This file was created by stream-game-launcher.sh on Linux.
+REM steam-game-launcher: one-shot Steam game launcher
+REM This file was created by steam-game-launcher.sh on Linux.
 REM It will delete itself after launching the game.
 
 start "" "steam://rungameid/${STEAM_APP_ID}"
