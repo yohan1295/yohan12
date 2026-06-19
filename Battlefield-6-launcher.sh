@@ -31,7 +31,7 @@ WINDOWS_USER="YourWindowsUsername"
 # NOTE: If BF6 is on EA App only (not Steam), leave STEAM_APP_ID empty and
 # set GAME_EXE_WINDOWS_PATH below to the BF6 executable instead.
 # Find the Steam App ID at: https://store.steampowered.com/app/<APPID>/
-STEAM_APP_ID=""
+STEAM_APP_ID="2807960"
 
 # Direct path to Battlefield 6 executable, relative to C:\ (forward slashes).
 # Use this if BF6 is installed via EA App rather than Steam.
