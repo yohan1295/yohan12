@@ -17,6 +17,14 @@
 #
 # Usage:
 #   sudo ./Battlefield-6-launcher.sh [--dry-run]
+#
+# Steam launch option (in game Properties → Launch Options):
+#   /absolute/path/to/Battlefield-6-launcher.sh
+#
+# Sudoers setup (run once, lets Steam self-elevate without a password prompt):
+#   echo "$USER ALL=(root) NOPASSWD: /absolute/path/to/Battlefield-6-launcher.sh" \
+#       | sudo tee /etc/sudoers.d/bf6-launcher
+#   sudo chmod 440 /etc/sudoers.d/bf6-launcher
 
 set -euo pipefail
 
@@ -249,14 +257,20 @@ set_nvram_next_boot() {
 # ---- main --------------------------------------------------
 
 main() {
+    # Self-elevate when launched as a regular user (e.g. from Steam).
+    # Requires a NOPASSWD sudoers rule for this script — see header comments.
+    if [[ $EUID -ne 0 ]]; then
+        exec sudo "$0" "$@"
+    fi
+
     for arg in "$@"; do
         case "$arg" in
             --dry-run) DRY_RUN=1; info "*** DRY RUN MODE — no changes will be made ***" ;;
-            *) die "Unknown argument: $arg" ;;
+            # Silently ignore Steam's injected %command% arguments.
+            --) break ;;
+            *) [[ "$arg" == /* || "$arg" == ./* ]] && break || die "Unknown argument: $arg" ;;
         esac
     done
-
-    [[ $EUID -eq 0 ]] || die "Must be run as root. Use: sudo $0"
     [[ -n "$WINDOWS_USER" ]] || die "WINDOWS_USER is not set in the CONFIG section."
     [[ -n "$STEAM_APP_ID" || -n "$GAME_EXE_WINDOWS_PATH" ]] \
         || die "Neither STEAM_APP_ID nor GAME_EXE_WINDOWS_PATH is set.\nSet one in the CONFIG section (see comments for Battlefield 6 options)."
