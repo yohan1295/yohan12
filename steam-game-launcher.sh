@@ -1,22 +1,38 @@
 #!/usr/bin/env bash
 # steam-game-launcher.sh
 #
-# Boots into Windows via systemd-boot and auto-launches a game on Windows startup.
+# Generic launcher: reboots into Windows via systemd-boot and auto-launches
+# whichever Steam game triggered it.
+#
+# App ID resolution order:
+#   1. --app-id=XXXX  CLI argument
+#   2. $SteamAppId    environment variable (Steam sets this automatically)
+#   3. STEAM_APP_ID   hardcoded fallback in CONFIG below
 #
 # Flow:
-#   1. Detects (or uses configured) Windows NTFS partition and boot entry
-#   2. Mounts the Windows partition
-#   3. Writes a self-deleting .bat to the Windows Startup folder
-#   4. Sets the next boot to Windows via UEFI NVRAM (bootctl set-oneshot)
-#   5. Reboots
+#   1. Resolves the Steam App ID
+#   2. Detects (or uses configured) Windows NTFS partition and boot entry
+#   3. Mounts the Windows partition
+#   4. Writes a self-deleting .bat to the Windows Startup folder
+#   5. Sets the next boot to Windows via UEFI NVRAM (bootctl set-oneshot)
+#   6. Reboots
 #
 # Requirements:
 #   - systemd-boot (bootctl) with efivarfs mounted at /sys/firmware/efi/efivars
 #   - ntfs-3g or kernel ntfs3 driver (Linux 5.15+)
 #   - sudo / root
 #
-# Usage:
-#   sudo ./steam-game-launcher.sh [--dry-run]
+# Steam launch option (game Properties → Launch Options):
+#   /absolute/path/to/steam-game-launcher.sh
+#   Steam sets $SteamAppId automatically — no need to pass the ID manually.
+#
+# Sudoers setup (run once so Steam can self-elevate without a password prompt):
+#   echo "$USER ALL=(root) NOPASSWD: /absolute/path/to/steam-game-launcher.sh" \
+#       | sudo tee /etc/sudoers.d/steam-game-launcher
+#   sudo chmod 440 /etc/sudoers.d/steam-game-launcher
+#
+# Manual usage:
+#   sudo ./steam-game-launcher.sh [--app-id=APPID] [--dry-run]
 
 set -euo pipefail
 
@@ -27,15 +43,9 @@ set -euo pipefail
 # Your Windows username (exactly as shown in C:\Users\)
 WINDOWS_USER="YourWindowsUsername"
 
-# Steam App ID of the game to launch.
-# Find it at: https://store.steampowered.com/app/<APPID>/
-# Examples: 730=CS2, 570=Dota2, 1172470=Apex Legends
-STEAM_APP_ID="730"
-
-# Leave empty to launch via Steam URI (recommended).
-# Set to a Windows path relative to C:\ (use forward slashes) to launch a .exe directly.
-# Example: "Program Files/MyGame/MyGame.exe"
-GAME_EXE_WINDOWS_PATH=""
+# Fallback App ID — only used if not provided via CLI or $SteamAppId env var.
+# Leave empty to require the ID to come from Steam or --app-id=.
+STEAM_APP_ID=""
 
 # Windows partition block device.
 # Leave empty to auto-detect the first NTFS partition.
@@ -67,8 +77,8 @@ warn() { echo "WARNING: $*" >&2; }
 # ---- dependency checks -------------------------------------
 
 check_deps() {
-    command -v bootctl  >/dev/null 2>&1 || die "bootctl not found — systemd-boot must be installed."
-    command -v lsblk    >/dev/null 2>&1 || die "lsblk not found."
+    command -v bootctl   >/dev/null 2>&1 || die "bootctl not found — systemd-boot must be installed."
+    command -v lsblk     >/dev/null 2>&1 || die "lsblk not found."
     command -v systemctl >/dev/null 2>&1 || die "systemctl not found."
 
     # Check efivarfs — required for NVRAM writes
@@ -87,6 +97,37 @@ check_deps() {
           command -v ntfs-3g >/dev/null 2>&1); then
         die "No NTFS support found. Install ntfs-3g:  sudo apt install ntfs-3g  (or equivalent)."
     fi
+}
+
+# ---- App ID resolution -------------------------------------
+
+resolve_app_id() {
+    local cli_id="$1"
+
+    if [[ -n "$cli_id" ]]; then
+        info "App ID from --app-id argument: $cli_id"
+        echo "$cli_id"
+        return
+    fi
+
+    # Steam sets SteamAppId (and the alias STEAM_APPID) in the environment
+    # when it launches any game via launch options.
+    local env_id="${SteamAppId:-${STEAM_APPID:-}}"
+    if [[ -n "$env_id" ]]; then
+        info "App ID from Steam environment (SteamAppId): $env_id"
+        echo "$env_id"
+        return
+    fi
+
+    if [[ -n "$STEAM_APP_ID" ]]; then
+        info "App ID from CONFIG fallback: $STEAM_APP_ID"
+        echo "$STEAM_APP_ID"
+        return
+    fi
+
+    die "Could not determine Steam App ID.\n" \
+        "Provide it via --app-id=XXXX, or set STEAM_APP_ID in the CONFIG section.\n" \
+        "If running from Steam launch options, Steam should set \$SteamAppId automatically."
 }
 
 # ---- partition detection -----------------------------------
@@ -124,7 +165,6 @@ detect_windows_boot_entry() {
 
     info "Auto-detecting Windows boot entry via bootctl..."
 
-    # `bootctl list` output has "id:" lines. We want the id of a Windows entry.
     local entry
     entry=$(bootctl list --no-pager 2>/dev/null \
         | awk '
@@ -183,6 +223,7 @@ unmount_windows() {
 # ---- write the Windows startup .bat ------------------------
 
 write_startup_bat() {
+    local app_id="$1"
     local startup_dir="$WINDOWS_MOUNT/$STARTUP_RELPATH"
     local bat_path="$startup_dir/$LAUNCHER_BAT"
 
@@ -190,37 +231,22 @@ write_startup_bat() {
         || die "Startup folder not found: $startup_dir\nCheck that WINDOWS_USER='$WINDOWS_USER' matches your Windows username exactly."
 
     info "Writing startup launcher: $bat_path"
+    info "Game will launch via: steam://rungameid/$app_id"
 
     if [[ $DRY_RUN -eq 1 ]]; then
         info "[dry-run] Would write bat to: $bat_path"
         return
     fi
 
-    if [[ -n "$GAME_EXE_WINDOWS_PATH" ]]; then
-        # Direct executable — convert forward slashes to backslashes for Windows
-        local win_path
-        win_path=$(echo "$GAME_EXE_WINDOWS_PATH" | tr '/' '\\')
-        cat > "$bat_path" << BATEOF
-@echo off
-REM steam-game-launcher: one-shot game launcher (direct exe)
-REM This file was created by steam-game-launcher.sh on Linux.
-REM It will delete itself after launching the game.
-
-start "" "C:\\${win_path}"
-del "%~f0"
-BATEOF
-    else
-        # Steam URI launch
-        cat > "$bat_path" << BATEOF
+    cat > "$bat_path" << BATEOF
 @echo off
 REM steam-game-launcher: one-shot Steam game launcher
 REM This file was created by steam-game-launcher.sh on Linux.
 REM It will delete itself after launching the game.
 
-start "" "steam://rungameid/${STEAM_APP_ID}"
+start "" "steam://rungameid/${app_id}"
 del "%~f0"
 BATEOF
-    fi
 
     info "Startup script written successfully."
 }
@@ -248,15 +274,28 @@ set_nvram_next_boot() {
 # ---- main --------------------------------------------------
 
 main() {
+    # Self-elevate when launched as a regular user (e.g. from Steam).
+    # Requires a NOPASSWD sudoers rule for this script — see header comments.
+    if [[ $EUID -ne 0 ]]; then
+        exec sudo "$0" "$@"
+    fi
+
+    local cli_app_id=""
+
     for arg in "$@"; do
         case "$arg" in
-            --dry-run) DRY_RUN=1; info "*** DRY RUN MODE — no changes will be made ***" ;;
-            *) die "Unknown argument: $arg" ;;
+            --dry-run)       DRY_RUN=1; info "*** DRY RUN MODE — no changes will be made ***" ;;
+            --app-id=*)      cli_app_id="${arg#--app-id=}" ;;
+            # Silently ignore Steam's injected %command% arguments.
+            --) break ;;
+            *) [[ "$arg" == /* || "$arg" == ./* ]] && break || die "Unknown argument: $arg" ;;
         esac
     done
 
-    [[ $EUID -eq 0 ]] || die "Must be run as root. Use: sudo $0"
     [[ -n "$WINDOWS_USER" ]] || die "WINDOWS_USER is not set in the CONFIG section."
+
+    local app_id
+    app_id=$(resolve_app_id "$cli_app_id")
 
     check_deps
 
@@ -267,7 +306,7 @@ main() {
     mount_windows "$partition"
     trap unmount_windows EXIT
 
-    write_startup_bat
+    write_startup_bat "$app_id"
     set_nvram_next_boot "$boot_entry"
 
     unmount_windows
